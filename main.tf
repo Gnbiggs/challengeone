@@ -167,7 +167,7 @@ resource "aws_lb_listener" "web_listener" {
 
 # Read credentials from credentials.cf file
 locals {
-  credentials = jsondecode(templatefile("${path.module}/credentials.cf", {}))
+  credentials = jsondecode(templatefile("${path.module}/credentials.json", {}))
 }
 
 # Store DB username in Parameter Store
