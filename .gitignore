@@ -1,0 +1,4 @@
+credentials.cf
+terraform.tfstate
+.terraform.lock.hcl
+.terraform/
