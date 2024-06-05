@@ -14,9 +14,9 @@ Security groups created for the web server and load balancer to allow traffic vi
 
 Target group attached to the application load balancer with a listener for HTTP traffic.
 
-Credentials.cf file is decoded as JSON to be able read the variables stored within the file.
+Credentials.json file is decoded as JSON to be able read the variables stored within the file.
 
-Database credentials are stored within the parameter store and are created from the credentials.cf file.
+Database credentials are stored within the parameter store and are created from the credentials.json file.
 
 RDS MySQL database is created within the same VPC and subnet.
 
