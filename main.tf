@@ -1,7 +1,7 @@
 #--------------------------------------------
 # My Terraform
 #
-# Build WebServer during Bootstrap
+# Build WebServer during Bootstrap using wordpress
 #
 # Made by AP
 #--------------------------------------------
@@ -10,53 +10,60 @@ provider "aws" {
   region = "eu-west-2"
 }
 
-# Checks for the latest version of Ubuntu AMI
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+# Create a new VPC
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+
+  tags = {
+    Name = "Main VPC"
   }
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-  owners = ["099720109477"] # Canonical
 }
 
-# Security group for web server instances
+# Create a new subnet
+resource "aws_subnet" "main" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = "eu-west-2a"
+
+  tags = {
+    Name = "Main Subnet"
+  }
+}
+
+# Create an Internet Gateway
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "Main Internet Gateway"
+  }
+}
+
+# Create a route table
+resource "aws_route_table" "main" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name = "Main Route Table"
+  }
+}
+
+# Associate the route table with the subneta
+resource "aws_route_table_association" "subneta" {
+  subnet_id      = aws_subnet.main.id
+  route_table_id = aws_route_table.main.id
+}
+
+# Security group for the web server instances
 resource "aws_security_group" "web" {
   name        = "Webserver-SG"
   description = "Security group for my Web server"
-
-  ingress {
-    from_port   = 80
-    to_port     = 83
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  tags = {
-    name = "Webserver SG by Terraform"
-  }
-}
-
-# Security group for load balancer
-resource "aws_security_group" "lb" {
-  name        = "LoadBalancer-SG"
-  description = "Security group for the Load Balancer"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port   = 80
@@ -78,20 +85,50 @@ resource "aws_security_group" "lb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
   tags = {
-    name = "LoadBalancer SG by Terraform"
+    Name = "Webserver SG by Terraform"
   }
 }
 
-# Load balancer
+# Security group for the load balancer
+resource "aws_security_group" "lb" {
+  name        = "LoadBalancer-SG"
+  description = "Security group for the Load Balancer"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = {
+    Name = "LoadBalancer SG"
+  }
+}
+
+# Web Application Load balancer
 resource "aws_lb" "web_lb" {
   name               = "web-load-balancer"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb.id]
-  subnets            = ["subnet-abc123", "subnet-def456"]  # Replace with your subnets
+  subnets            = [aws_subnet.main.id]
 
   tags = {
-    name = "Web Load Balancer by Terraform"
+    Name = "Web Application Load Balancer"
   }
 }
 
@@ -100,7 +137,7 @@ resource "aws_lb_target_group" "web_tg" {
   name     = "web-target-group"
   port     = 80
   protocol = "HTTP"
-  vpc_id   = "vpc-abc123"  # Replace with your VPC ID
+  vpc_id   = aws_vpc.main.id
 
   health_check {
     interval            = 30
@@ -112,7 +149,7 @@ resource "aws_lb_target_group" "web_tg" {
   }
 
   tags = {
-    name = "Web Target Group by Terraform"
+    Name = "Web Target Group"
   }
 }
 
@@ -128,24 +165,81 @@ resource "aws_lb_listener" "web_listener" {
   }
 }
 
+# Read credentials from credentials.cf file
+locals {
+  credentials = templatefile("${path.module}/credentials.cf", {})
+}
+
+# Store DB username in Parameter Store
+resource "aws_ssm_parameter" "db_username" {
+  name  = "db_username"
+  type  = "String"
+  value = local.credentials.db_username
+  tags = {
+    Name = "MySQL Username"
+  }
+}
+
+# Store DB password in Parameter Store
+resource "aws_ssm_parameter" "db_password" {
+  name  = "db_password"
+  type  = "SecureString"
+  value = local.credentials.db_password
+  tags = {
+    Name = "MySQL Password"
+  }
+}
+
+# RDS instance for MySQL
+resource "aws_db_instance" "mysqldb" {
+  allocated_storage    = 20
+  engine               = "mysql"
+  engine_version       = "8.0"
+  instance_class       = "db.t2.micro"
+  username             = aws_ssm_parameter.db_username.value
+  password             = aws_ssm_parameter.db_password.value
+  parameter_group_name = "default.mysql8.0"
+  skip_final_snapshot  = true
+  vpc_security_group_ids = [aws_security_group.web.id]
+  db_subnet_group_name = aws_db_subnet_group.default.name
+
+  tags = {
+    Name = "WordPress Database"
+  }
+}
+
+# DB Subnet Group
+resource "aws_db_subnet_group" "default" {
+  name       = "main-subnet-group"
+  subnet_ids = [aws_subnet.main.id]
+
+  tags = {
+    Name = "Main Subnet Group"
+  }
+}
+
 # Web server instances
 resource "aws_instance" "web" {
   count                  = 2
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.main.id
   vpc_security_group_ids = [aws_security_group.web.id]
   user_data              = <<EOF
 #!/bin/bash
 apt-get update -y
-apt-get install -y apache2
-MYIP=`curl http://169.254.169.254/latest/meta-data/local-ipv4`
-echo "<h2>WebServer with PrivateIP: $MYIP</h2><br>Built by Terraform" > /var/www/html/index.html
+apt-get install -y apache2 php php-mysql wget
+wget https://wordpress.org/latest.tar.gz
+tar -xzf latest.tar.gz
+cp -r wordpress/* /var/www/html/
+chown -R www-data:www-data /var/www/html/
+chmod -R 755 /var/www/html/
 systemctl start apache2
 systemctl enable apache2
 EOF
 
   tags = {
-    name = "Webserver built by Terraform"
+    Name = "Webserver"
   }
 
   lifecycle {
@@ -156,4 +250,20 @@ EOF
   provisioner "local-exec" {
     command = "aws elbv2 register-targets --target-group-arn ${aws_lb_target_group.web_tg.arn} --targets Id=${self.id}"
   }
+}
+
+# Data source for the latest Ubuntu AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+  owners      = ["099720109477"]
 }
