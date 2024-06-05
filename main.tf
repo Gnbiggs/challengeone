@@ -1,3 +1,11 @@
+#--------------------------------------------
+# My Terraform
+#
+# Build WebServer during Bootstrap using wordpress
+#
+# Made by AP
+#--------------------------------------------
+
 provider "aws" {
   region = "eu-west-2"
 }
