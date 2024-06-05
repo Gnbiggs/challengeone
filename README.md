@@ -4,7 +4,7 @@ Create and configure an AWS environment for hosting a wordpress web server.
 
 The provider is specified as region eu-west-2.
 
-One VPC and Subnet configured (Main), for best practises there would be 2 configured using multiple AZ's.
+One VPC and 2 subnets are then created as the Load Balancer requires mulitple AZs.
 
 Internet gateway created to allow internet access.
 
@@ -18,7 +18,13 @@ Credentials.json file is decoded as JSON to be able read the variables stored wi
 
 Database credentials are stored within the parameter store and are created from the credentials.json file.
 
+IAM role created for autoscaling.
+
+Policy then attached to the IAM role.
+
 RDS MySQL database is created within the same VPC and subnet.
+
+Auto scaling group created for the RDS.
 
 EC2 webserver us created with an Ubuntu AMI, using user data to install Apache, php and wordpress during bootstrap.
 

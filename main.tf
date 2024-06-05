@@ -1,11 +1,3 @@
-#--------------------------------------------
-# My Terraform
-#
-# Build WebServer during Bootstrap using wordpress
-#
-# Made by AP
-#--------------------------------------------
-
 provider "aws" {
   region = "eu-west-2"
 }
@@ -19,14 +11,24 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Create a new subnet
-resource "aws_subnet" "main" {
+# Create new subnets in different AZs for LB purposes
+resource "aws_subnet" "main_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.1.0/24"
   availability_zone = "eu-west-2a"
 
   tags = {
-    Name = "Main Subnet"
+    Name = "Main Subnet A"
+  }
+}
+
+resource "aws_subnet" "main_b" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = "eu-west-2b"
+
+  tags = {
+    Name = "Main Subnet B"
   }
 }
 
@@ -53,9 +55,14 @@ resource "aws_route_table" "main" {
   }
 }
 
-# Associate the route table with the subneta
+# Associate the route table with the subnets
 resource "aws_route_table_association" "subneta" {
-  subnet_id      = aws_subnet.main.id
+  subnet_id      = aws_subnet.main_a.id
+  route_table_id = aws_route_table.main.id
+}
+
+resource "aws_route_table_association" "subnetb" {
+  subnet_id      = aws_subnet.main_b.id
   route_table_id = aws_route_table.main.id
 }
 
@@ -125,7 +132,7 @@ resource "aws_lb" "web_lb" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb.id]
-  subnets            = [aws_subnet.main.id]
+  subnets            = [aws_subnet.main_a.id, aws_subnet.main_b.id]
 
   tags = {
     Name = "Web Application Load Balancer"
@@ -170,7 +177,7 @@ locals {
   credentials = jsondecode(templatefile("${path.module}/credentials.json", {}))
 }
 
-# Store DB username in Parameter Store
+# Store DB credentials in Parameter Store
 resource "aws_ssm_parameter" "db_username" {
   name  = "db_username"
   type  = "String"
@@ -180,7 +187,6 @@ resource "aws_ssm_parameter" "db_username" {
   }
 }
 
-# Store DB password in Parameter Store
 resource "aws_ssm_parameter" "db_password" {
   name  = "db_password"
   type  = "SecureString"
@@ -190,12 +196,18 @@ resource "aws_ssm_parameter" "db_password" {
   }
 }
 
+# Attach the policy to the IAM role
+resource "aws_iam_role_policy_attachment" "autoscaling_role_policy" {
+  role       = "AmazonEC2AutoScalingRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"
+}
+
 # RDS instance for MySQL
 resource "aws_db_instance" "mysqldb" {
   allocated_storage    = 20
   engine               = "mysql"
-  engine_version       = "8.0"
-  instance_class       = "db.t2.micro"
+  engine_version       = "8.0.35"
+  instance_class       = "db.t3.micro"
   username             = aws_ssm_parameter.db_username.value
   password             = aws_ssm_parameter.db_password.value
   parameter_group_name = "default.mysql8.0"
@@ -208,10 +220,28 @@ resource "aws_db_instance" "mysqldb" {
   }
 }
 
+# Auto Scaling Group
+resource "aws_autoscaling_group" "web_asg" {
+  launch_configuration = aws_launch_configuration.web_lc.id
+  vpc_zone_identifier  = [aws_subnet.main_a.id, aws_subnet.main_b.id]
+  min_size             = 2
+  max_size             = 2
+  desired_capacity     = 2
+  target_group_arns    = [aws_lb_target_group.web_tg.arn]
+
+  tag {
+    key                 = "Name"
+    value               = "Webserver"
+    propagate_at_launch = true
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.autoscaling_role_policy]
+}
+
 # DB Subnet Group
 resource "aws_db_subnet_group" "default" {
   name       = "main-subnet-group"
-  subnet_ids = [aws_subnet.main.id]
+  subnet_ids = [aws_subnet.main_a.id, aws_subnet.main_b.id]
 
   tags = {
     Name = "Main Subnet Group"
@@ -223,7 +253,7 @@ resource "aws_instance" "web" {
   count                  = 2
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.main.id
+  subnet_id              = aws_subnet.main_a.id
   vpc_security_group_ids = [aws_security_group.web.id]
   user_data              = <<EOF
 #!/bin/bash
@@ -245,11 +275,33 @@ EOF
   lifecycle {
     create_before_destroy = true
   }
+}
 
-  # Register instances with the load balancer target group
-  provisioner "local-exec" {
-    command = "aws elbv2 register-targets --target-group-arn ${aws_lb_target_group.web_tg.arn} --targets Id=${self.id}"
-  }
+# Auto scaling group with launch configuration
+resource "aws_launch_configuration" "web_lc" {
+  name          = "web-launch-configuration"
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = "t2.micro"
+  security_groups = [aws_security_group.web.id]
+  user_data = <<EOF
+#!/bin/bash
+apt-get update -y
+apt-get install -y apache2 php php-mysql wget
+wget https://wordpress.org/latest.tar.gz
+tar -xzf latest.tar.gz
+cp -r wordpress/* /var/www/html/
+chown -R www-data:www-data /var/www/html/
+chmod -R 755 /var/www/html/
+systemctl start apache2
+systemctl enable apache2
+EOF
+  iam_instance_profile = "AmazonEC2AutoScalingRole"
+}
+
+#autoscaling group attachments
+resource "aws_autoscaling_attachment" "asg_attachment" {
+  autoscaling_group_name = aws_autoscaling_group.web_asg.name
+  lb_target_group_arn    = aws_lb_target_group.web_tg.arn
 }
 
 # Data source for the latest Ubuntu AMI
