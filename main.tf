@@ -224,9 +224,9 @@ resource "aws_db_instance" "mysqldb" {
 resource "aws_autoscaling_group" "web_asg" {
   launch_configuration = aws_launch_configuration.web_lc.id
   vpc_zone_identifier  = [aws_subnet.main_a.id, aws_subnet.main_b.id]
-  min_size             = 2
+  min_size             = 1
   max_size             = 2
-  desired_capacity     = 2
+  desired_capacity     = 1
   target_group_arns    = [aws_lb_target_group.web_tg.arn]
 
   tag {
@@ -250,7 +250,7 @@ resource "aws_db_subnet_group" "default" {
 
 # Web server instances
 resource "aws_instance" "web" {
-  count                  = 2
+  count                  = 1
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.main_a.id
